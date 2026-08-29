@@ -1341,3 +1341,18 @@
   - 计数题提示改为方向无关；通过重复数量徽标识别参考条方向并约束另一侧网格。所有点选答案在缓存和点击前验证挑战边界，计数题额外验证可点击网格，越界答案直接拒绝。
   - 无效的标量拖拽坐标提前报告为结构错误；新增浏览器请求头、超时信息、重试预算、左右参考条和越界坐标回归覆盖。
   - 本地定向测试 `35 passed`，完整测试 `60 passed`，Ruff、变更文件 Black 和 `git diff --check` 均通过。
+
+## 2026-08-29
+
+- 现象：
+  - Fork 仓库 `Kiva007/epic-freebies-helper` 的 Actions run `33271021786` 在登录阶段失败：hCaptcha 最终解出（`Challenge success`），但 `Timed out waiting for Epic login outcome`，5 次尝试后 `RuntimeError: Authentication failed, aborting this run`（`app/deploy.py:87`）。
+  - CI 结果只体现在 Actions 页面，用户无法在微信即时获知成功/失败。
+- 根因判断：
+  - 登录结果等待超时属概率性风控（GitHub 托管 runner 出口 IP 被 Epic 拖延），非配置错误；GLM 视觉调用链路正常。
+  - 仓库无 PushPlus 微信推送通道。
+- 改动文件：
+  - `.github/workflows/epic-gamer.yml`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 在 workflow 末尾新增 `Notify via PushPlus` 步骤（`if: always()`）：读取 `PUSHPLUS_TOKEN` secret，POST `http://www.pushplus.plus/send/`（form-urlencoded，`template=txt`），推送运行状态与 run 链接；未配置 secret 时静默跳过。
+  - 本地 `python -c "import yaml; yaml.safe_load(open('.github/workflows/epic-gamer.yml'))"` 校验 YAML 有效（仓库不允许执行测试，采用静态校验）。

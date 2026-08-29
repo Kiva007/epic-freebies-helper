@@ -168,3 +168,26 @@ jobs:
           name: epic-screenshots-${{ github.run_id }}
           path: app/volumes/screenshots/
           retention-days: 7
+
+      - name: Notify via PushPlus
+        if: always()
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$PUSHPLUS_TOKEN" ]; then
+            echo "未配置 PUSHPLUS_TOKEN，跳过微信推送"
+            exit 0
+          fi
+          emoji="✅"
+          [ "$STATUS" != "success" ] && emoji="❌"
+          content="Epic 免费游戏领取任务结束
+          运行状态: $STATUS
+          详情: $RUN_URL"
+          resp=$(curl -sS -m 30 -X POST "http://www.pushplus.plus/send/" \
+            --data-urlencode "token=$PUSHPLUS_TOKEN" \
+            --data-urlencode "title=Epic免费游戏 $emoji" \
+            --data-urlencode "template=txt" \
+            --data-urlencode "content=$content") || resp="curl 失败"
+          echo "📤 PushPlus 响应: $resp"
