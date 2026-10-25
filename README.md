@@ -156,28 +156,43 @@ Fork 之后先打开自己仓库的 `Actions` 页面，进入 `Epic Awesome Game
 | `GEMINI_BASE_URL` | https://aihubmix.com |
 | `GEMINI_MODEL` | gemini-2.5-pro |
 
+如果你使用任意 `OpenAI 兼容接口`（官方 OpenAI、硅基流动、stepfun、其他中转），请按下面这组填写：
+
+**如果你把 `LLM_PROVIDER` 设为 `openai`，就必须填写 `OPENAI_API_KEY`；无需新建并填写 `GLM_API_KEY` 或 `GEMINI_API_KEY`。**
+
+| 配置名 | 示例值 |
+| --- | --- |
+| `LLM_PROVIDER` | openai |
+| `OPENAI_API_KEY` | 你的 OpenAI 兼容服务 Key |
+| `OPENAI_BASE_URL` | https://api.siliconflow.cn/v1 |
+| `OPENAI_MODEL` | Qwen/Qwen3-VL-32B-Instruct |
+
+验证码解题是视觉任务，`OPENAI_MODEL` 必须选择支持图片输入的模型（如 `Qwen/Qwen3-VL-32B-Instruct`、`step-3.7-flash`、`gpt-4o-mini`）；纯文本模型会在第一次带图请求时直接报错。
+
 说明：
 
-- 当前代码同时支持 `Gemini 官方接口` 和 `AiHubMix` 这类 Gemini 兼容接口。
+- 当前代码支持 `Gemini 官方接口`、`AiHubMix` 这类 Gemini 兼容接口，以及任意 `OpenAI 兼容接口`（`LLM_PROVIDER=openai`）。
 - 变量名是 `GEMINI_BASE_URL`，不是 `GEMINI_BASE_MODEL`。
 - `LLM_PROVIDER=glm` 时，请填写 `GLM_API_KEY`，无需新建并填写 `GEMINI_API_KEY`。
 - `LLM_PROVIDER=gemini` 时，请填写 `GEMINI_API_KEY`，无需新建并填写 `GLM_API_KEY`。
+- `LLM_PROVIDER=openai` 时，请填写 `OPENAI_API_KEY` 与 `OPENAI_BASE_URL`，无需新建并填写 `GLM_API_KEY` 或 `GEMINI_API_KEY`。
 - 使用 `Gemini 官方接口` 时，`GEMINI_BASE_URL` 应留空，让 SDK 直接走 Google 官方默认地址。
 - 使用 `AiHubMix` 或其他 Gemini 兼容中转接口时，再填写对应的 `GEMINI_BASE_URL`。
 - 对 `GLM` 路线，推荐把 `GLM_MODEL` 设为 `glm-4.6v`；`glm-4.6v-flash` 在高峰期可能报“该模型当前访问量过大，请您稍后重试”。
 - 对 `Gemini` / `AiHubMix` 路线，建议先用 `GEMINI_MODEL=gemini-2.5-pro` 作为起步配置。
-- `CHALLENGE_CLASSIFIER_MODEL`、`IMAGE_CLASSIFIER_MODEL`、`SPATIAL_POINT_REASONER_MODEL`、`SPATIAL_PATH_REASONER_MODEL` 如果留空，会自动跟随当前 provider 的默认模型，也就是 `GLM_MODEL` 或 `GEMINI_MODEL`。
+- 对 `OpenAI 兼容` 路线，建议先用服务商文档中标注支持视觉的模型；推理型模型（如 `step-3.7-flash`）已内置 `reasoning_content` 兜底解析。
+- `CHALLENGE_CLASSIFIER_MODEL`、`IMAGE_CLASSIFIER_MODEL`、`SPATIAL_POINT_REASONER_MODEL`、`SPATIAL_PATH_REASONER_MODEL` 如果留空，会自动跟随当前 provider 的默认模型，也就是 `GLM_MODEL`、`OPENAI_MODEL` 或 `GEMINI_MODEL`。
 - 如果你暂时不想细分模型，最简单的做法就是让上面 4 个覆盖项全部留空。
 - 走 `GLM` 路线时不需要额外再填 `GEMINI_API_KEY`。
 
 如果你确实要单独覆盖这 4 个模型，可以直接照下面填写：
 
-| 配置名 | GLM 示例值 | Gemini / AiHubMix 示例值 |
-| --- | --- | --- |
-| `CHALLENGE_CLASSIFIER_MODEL` | 留空或 `glm-4.6v` | 留空或 `gemini-2.5-pro` |
-| `IMAGE_CLASSIFIER_MODEL` | 留空或 `glm-4.6v` | 留空或 `gemini-2.5-pro` |
-| `SPATIAL_POINT_REASONER_MODEL` | 留空或 `glm-4.6v` | 留空或 `gemini-2.5-pro` |
-| `SPATIAL_PATH_REASONER_MODEL` | 留空或 `glm-4.6v` | 留空或 `gemini-2.5-pro` |
+| 配置名 | GLM 示例值 | OpenAI 兼容示例值 | Gemini / AiHubMix 示例值 |
+| --- | --- | --- | --- |
+| `CHALLENGE_CLASSIFIER_MODEL` | 留空或 `glm-4.6v` | 留空或 `Qwen/Qwen3-VL-32B-Instruct` | 留空或 `gemini-2.5-pro` |
+| `IMAGE_CLASSIFIER_MODEL` | 留空或 `glm-4.6v` | 留空或 `Qwen/Qwen3-VL-32B-Instruct` | 留空或 `gemini-2.5-pro` |
+| `SPATIAL_POINT_REASONER_MODEL` | 留空或 `glm-4.6v` | 留空或 `Qwen/Qwen3-VL-32B-Instruct` | 留空或 `gemini-2.5-pro` |
+| `SPATIAL_PATH_REASONER_MODEL` | 留空或 `glm-4.6v` | 留空或 `Qwen/Qwen3-VL-32B-Instruct` | 留空或 `gemini-2.5-pro` |
 
 ### 多账号配置（可选）
 

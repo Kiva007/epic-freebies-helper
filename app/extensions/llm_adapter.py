@@ -5,6 +5,7 @@ import json
 import mimetypes
 import re
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -1035,6 +1036,54 @@ class _PatchedResponse:
         return {"text": self.text, "parsed": parsed, "raw": self._raw}
 
 
+@dataclass(frozen=True)
+class _OpenAIEndpoint:
+    """Resolved OpenAI-compatible endpoint: base URL, credential, timeout, log label."""
+
+    base_url: str
+    api_key: str
+    timeout: float
+    label: str
+
+
+def _resolve_glm_endpoint(settings: Any) -> _OpenAIEndpoint:
+    return _OpenAIEndpoint(
+        base_url=settings.GLM_BASE_URL,
+        api_key=settings.GLM_API_KEY.get_secret_value(),
+        timeout=float(settings.GLM_REQUEST_TIMEOUT_SECONDS),
+        label="GLM",
+    )
+
+
+def _resolve_openai_endpoint(settings: Any) -> _OpenAIEndpoint:
+    return _OpenAIEndpoint(
+        base_url=settings.OPENAI_BASE_URL,
+        api_key=settings.OPENAI_API_KEY.get_secret_value(),
+        timeout=float(settings.OPENAI_REQUEST_TIMEOUT_SECONDS),
+        label="OpenAI",
+    )
+
+
+def _json_mode_unsupported(response: httpx.Response, payload: dict[str, Any]) -> bool:
+    """Detect an explicit JSON-mode capability rejection (HTTP 400) from the endpoint."""
+    if response.status_code != 400:
+        return False
+    if payload.get("response_format") != {"type": "json_object"}:
+        return False
+    with suppress(Exception):
+        error = response.json()
+        if isinstance(error, dict):
+            error = error.get("error") or error
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").casefold()
+            code = str(error.get("code") or "")
+            if code == "20024" or ("json" in message and "mode" in message):
+                return True
+            if "json" in message and ("not support" in message or "unsupported" in message):
+                return True
+    return False
+
+
 class _GLMAsyncFiles:
     def __init__(self, storage: dict[str, dict[str, Any]]):
         self._storage = storage
@@ -1048,9 +1097,16 @@ class _GLMAsyncFiles:
 
 
 class _GLMAsyncModels:
-    def __init__(self, settings: Any, storage: dict[str, dict[str, Any]]):
+    def __init__(
+        self,
+        settings: Any,
+        storage: dict[str, dict[str, Any]],
+        endpoint: _OpenAIEndpoint | None = None,
+    ):
         self._settings = settings
         self._storage = storage
+        self._endpoint = endpoint
+        self._models_without_json_mode: set[str] = set()
 
     def _to_image_part(self, payload: bytes, mime_type: str) -> dict[str, Any]:
         encoded = base64.b64encode(payload).decode("utf-8")
@@ -1131,7 +1187,10 @@ class _GLMAsyncModels:
         if temperature is not None:
             payload["temperature"] = temperature
 
-        if getattr(config, "response_schema", None) is not None:
+        if (
+            getattr(config, "response_schema", None) is not None
+            and model not in self._models_without_json_mode
+        ):
             payload["response_format"] = {"type": "json_object"}
 
         if thinking_payload := _glm_thinking_payload(model, config):
@@ -1143,22 +1202,35 @@ class _GLMAsyncModels:
     def _extract_text(self, data: dict[str, Any]) -> str:
         choices = data.get("choices") or []
         if not choices:
-            raise ValueError("GLM response does not contain choices")
+            raise ValueError("LLM response does not contain choices")
 
         message = choices[0].get("message") or {}
         content = message.get("content")
 
         if isinstance(content, str):
-            return content.strip()
-
-        if isinstance(content, list):
+            content = content.strip()
+        elif isinstance(content, list):
             parts = []
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "text":
                     parts.append(item.get("text", ""))
-            return "\n".join(parts).strip()
+            content = "\n".join(parts).strip()
+        else:
+            content = ""
 
-        raise ValueError("GLM response content is empty")
+        if not content:
+            # Reasoning models (e.g. step-3.7-flash) can leave `content` empty and put
+            # the answer inside `reasoning_content` when the token budget runs out.
+            for key in ("reasoning_content", "reasoning"):
+                fallback = message.get(key)
+                if isinstance(fallback, str) and fallback.strip():
+                    content = fallback.strip()
+                    break
+
+        if not content:
+            raise ValueError("LLM response content is empty")
+
+        return content
 
     def _parse_response(self, text: str, config: Any) -> Any:
         schema = getattr(config, "response_schema", None)
@@ -1190,7 +1262,7 @@ class _GLMAsyncModels:
 
         return payload
 
-    def _log_glm_error(self, response: httpx.Response):
+    def _log_glm_error(self, response: httpx.Response, label: str = "GLM"):
         body = response.text[:2000]
         code = ""
         message = ""
@@ -1202,7 +1274,8 @@ class _GLMAsyncModels:
 
         if response.status_code == 429 or code in {"1302", "1303", "1304", "1308", "1113"}:
             logger.error(
-                "GLM quota/rate limit issue | http_status={} | code={} | message={}",
+                "{} quota/rate limit issue | http_status={} | code={} | message={}",
+                label,
                 response.status_code,
                 code,
                 message or body,
@@ -1211,7 +1284,8 @@ class _GLMAsyncModels:
 
         if response.status_code in {401, 403} or code in {"1000", "1001", "1002", "1003", "1004"}:
             logger.error(
-                "GLM auth issue | http_status={} | code={} | message={}",
+                "{} auth issue | http_status={} | code={} | message={}",
+                label,
                 response.status_code,
                 code,
                 message or body,
@@ -1219,7 +1293,11 @@ class _GLMAsyncModels:
             return
 
         logger.error(
-            "GLM request failed | status={} | code={} | body={}", response.status_code, code, body
+            "{} request failed | status={} | code={} | body={}",
+            label,
+            response.status_code,
+            code,
+            body,
         )
 
     async def generate_content(self, model: str, contents: Any, **kwargs) -> _PatchedResponse:
@@ -1227,29 +1305,41 @@ class _GLMAsyncModels:
         if config is None:
             raise ValueError("config is required for GLM compatibility mode")
 
-        endpoint = self._settings.GLM_BASE_URL.rstrip("/")
-        if not endpoint.endswith("/chat/completions"):
-            endpoint = f"{endpoint}/chat/completions"
+        endpoint_config = self._endpoint or _resolve_glm_endpoint(self._settings)
+        url = endpoint_config.base_url.rstrip("/")
+        if not url.endswith("/chat/completions"):
+            url = f"{url}/chat/completions"
 
         payload = self._build_payload(model=model, contents=contents, config=config, kwargs=kwargs)
         headers = {
-            "Authorization": f"Bearer {self._settings.GLM_API_KEY.get_secret_value()}",
+            "Authorization": f"Bearer {endpoint_config.api_key}",
             "Content-Type": "application/json",
         }
 
-        request_timeout = float(self._settings.GLM_REQUEST_TIMEOUT_SECONDS)
+        request_timeout = endpoint_config.timeout
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(request_timeout, connect=min(30.0, request_timeout))
         ) as client:
             try:
-                response = await client.post(endpoint, headers=headers, json=payload)
+                response = await client.post(url, headers=headers, json=payload)
+                if response.is_error and _json_mode_unsupported(response, payload):
+                    # Endpoints without JSON mode: retry once without response_format.
+                    # Other 400s (invalid image messages, bad auth) must stay visible.
+                    self._models_without_json_mode.add(model)
+                    payload.pop("response_format")
+                    logger.warning(
+                        "LLM endpoint does not support JSON mode; retrying once without "
+                        "response_format | model={}",
+                        model,
+                    )
+                    response = await client.post(url, headers=headers, json=payload)
             except httpx.TimeoutException as err:
                 raise TimeoutError(
-                    f"GLM request timed out after {request_timeout:g} seconds "
+                    f"{endpoint_config.label} request timed out after {request_timeout:g} seconds "
                     f"({type(err).__name__})"
                 ) from err
             if response.is_error:
-                self._log_glm_error(response)
+                self._log_glm_error(response, endpoint_config.label)
                 response.raise_for_status()
             data = response.json()
 
@@ -1259,9 +1349,14 @@ class _GLMAsyncModels:
 
 
 class _GLMAsyncNamespace:
-    def __init__(self, settings: Any, storage: dict[str, dict[str, Any]]):
+    def __init__(
+        self,
+        settings: Any,
+        storage: dict[str, dict[str, Any]],
+        endpoint: _OpenAIEndpoint | None = None,
+    ):
         self.files = _GLMAsyncFiles(storage)
-        self.models = _GLMAsyncModels(settings, storage)
+        self.models = _GLMAsyncModels(settings, storage, endpoint=endpoint)
 
 
 class GLMCompatibleGenAIClient:
@@ -1269,7 +1364,19 @@ class GLMCompatibleGenAIClient:
         from settings import settings
 
         self._storage: dict[str, dict[str, Any]] = {}
-        self.aio = _GLMAsyncNamespace(settings, self._storage)
+        self.aio = _GLMAsyncNamespace(
+            settings, self._storage, endpoint=_resolve_glm_endpoint(settings)
+        )
+
+
+class OpenAICompatibleGenAIClient:
+    def __init__(self, *args, **kwargs):
+        from settings import settings
+
+        self._storage: dict[str, dict[str, Any]] = {}
+        self.aio = _GLMAsyncNamespace(
+            settings, self._storage, endpoint=_resolve_openai_endpoint(settings)
+        )
 
 
 def _limit_glm_provider_attempts(max_attempts: int = 2) -> bool:
@@ -1363,6 +1470,28 @@ def apply_glm_patch(settings: Any):
         logger.error(f"❌ GLM 兼容补丁加载失败: {exc}")
 
 
+def apply_openai_patch(settings: Any):
+    if not settings.OPENAI_API_KEY:
+        return
+    if not settings.OPENAI_BASE_URL.strip():
+        logger.error(
+            "LLM provider misconfigured | LLM_PROVIDER=openai but OPENAI_BASE_URL is empty"
+        )
+        return
+
+    try:
+        from google import genai
+
+        genai.Client = OpenAICompatibleGenAIClient
+        if not _limit_glm_provider_attempts():
+            logger.warning("OpenAI provider retry budget could not be configured")
+        logger.info(
+            f"🚀 OpenAI 兼容补丁已应用 | 模型: {settings.OPENAI_MODEL} | 地址: {settings.OPENAI_BASE_URL}"
+        )
+    except Exception as exc:
+        logger.error(f"❌ OpenAI 兼容补丁加载失败: {exc}")
+
+
 def apply_llm_patch(settings: Any):
     provider = settings.LLM_PROVIDER.lower()
     if provider == "glm":
@@ -1370,6 +1499,15 @@ def apply_llm_patch(settings: Any):
             logger.error("LLM provider misconfigured | LLM_PROVIDER=glm but GLM_API_KEY is empty")
             return
         apply_glm_patch(settings)
+        return
+
+    if provider == "openai":
+        if not settings.OPENAI_API_KEY:
+            logger.error(
+                "LLM provider misconfigured | LLM_PROVIDER=openai but OPENAI_API_KEY is empty"
+            )
+            return
+        apply_openai_patch(settings)
         return
 
     if provider == "gemini" and not settings.GEMINI_API_KEY:

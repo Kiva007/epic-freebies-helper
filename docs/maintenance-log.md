@@ -1356,3 +1356,29 @@
 - 处理结果：
   - 在 workflow 末尾新增 `Notify via PushPlus` 步骤（`if: always()`）：读取 `PUSHPLUS_TOKEN` secret，POST `http://www.pushplus.plus/send/`（form-urlencoded，`template=txt`），推送运行状态与 run 链接；未配置 secret 时静默跳过。
   - 本地 `python -c "import yaml; yaml.safe_load(open('.github/workflows/epic-gamer.yml'))"` 校验 YAML 有效（仓库不允许执行测试，采用静态校验）。
+
+## 2026-10-25
+
+### 新增 LLM_PROVIDER=openai：任意 OpenAI 兼容端点接入
+
+- 现象：
+  - Fork 仓库 `Kiva007/epic-freebies-helper` 自 2026-08-29 部署起 10 次定时/手动 run 全部失败，统一死因是 `glm` 路线的 `GLM_API_KEY` 不可用（8 月底为 `GLM request timed out after 50 seconds`，9 月中起为 `http_status=429 code=1113 余额不足或无可用资源包`），hCaptcha 解题 LLM 每轮 30 次全挂 → Epic 登录超时 ×5 → `app/deploy.py:87` `RuntimeError: Authentication failed, aborting this run` → exit 1。
+  - 仓库只支持 `glm` 与 `gemini` 两条 LLM 路线；用户持有可用但非智谱的 OpenAI 兼容端点（stepfun，模型 `step-3.7-flash`）时无路可走。
+- 根因判断：
+  - `app/extensions/llm_adapter.py` 的 `_GLMAsyncModels.generate_content` 本身就是标准 OpenAI chat/completions 客户端（POST `{BASE_URL}/chat/completions`，Bearer 认证）；唯一 GLM 特定逻辑 `_glm_thinking_payload` 只对 `glm-4.5*` 模型生效。缺的只是一等公民的 `openai` 配置语义，不是新客户端。
+  - 上游无已合并的 OpenAI 兼容支持：PR #32（硅基流动 Qwen3-VL）当天以 draft 关闭未合并；`openai`/`new-api`/`deepseek` 关键词在 issues+PRs 零命中。
+  - 实测探针（2026-10-25，stepfun `https://api.stepfun.com/step_plan/v1`）：`step-3.7-flash` 支持图片输入、支持 `response_format: json_object`；但为推理模型，`content` 可能为空、答案落在 `reasoning_content`，需要兜底解析。
+- 改动文件：
+  - `app/settings.py`
+  - `app/extensions/llm_adapter.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `.env.example`
+  - `README.md`
+  - `tests/test_openai_provider.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增 `LLM_PROVIDER=openai` 第三路线：`OPENAI_API_KEY`/`OPENAI_BASE_URL`（默认 `https://api.openai.com/v1`）/`OPENAI_MODEL`（默认 `gpt-4o-mini`）/`OPENAI_REQUEST_TIMEOUT_SECONDS`（默认 60）；`glm`/`gemini` 分支原样不动，现有配置零影响；workflow 按 GLM 同模式透传 3 个环境变量（secrets + vars）。
+  - 客户端泛化：`_GLMAsyncModels` 支持注入 `_OpenAIEndpoint(base_url/api_key/timeout/label)`；新增 `OpenAICompatibleGenAIClient` 与 `apply_openai_patch`；`apply_llm_patch` 增加 openai 分发及缺 key/缺 base_url 报错；四个分类器模型默认跟随 `OPENAI_MODEL`。
+  - 推理模型兼容：`_extract_text` 在 `content` 为空时回退 `reasoning_content`/`reasoning`；错误日志前缀随 endpoint label 泛化。
+  - 通用性防御：端点显式不支持 JSON mode（HTTP 400，如 SiliconFlow code 20024）时对该模型一次性去掉 `response_format` 重发，其他 400 不掩盖。
+  - 验证（仓库不允许执行测试，采用静态审查 + lint + 定向非测试验证）：`uv run ruff check` 全部通过；`uv run black -C -l 100` 已格式化；CI 同款 `scripts/check_hcaptcha_contract.py` 通过（4 challenge types, 16 request types）；真实端点冒烟通过——stepfun `step-3.7-flash` 带图请求经补丁客户端返回正确答案；新增 `tests/test_openai_provider.py` 覆盖 provider 分发、端点解析、URL/鉴权、JSON mode 降级重试、reasoning 兜底、settings 默认值与 workflow env 透传。
