@@ -169,10 +169,13 @@ Fork 之后先打开自己仓库的 `Actions` 页面，进入 `Epic Awesome Game
 
 验证码解题是视觉任务，`OPENAI_MODEL` 必须选择支持图片输入的模型（如 `Qwen/Qwen3-VL-32B-Instruct`、`step-3.7-flash`、`gpt-4o-mini`）；纯文本模型会在第一次带图请求时直接报错。
 
-如果选用推理型模型（如 `step-3.7-flash`），注意两个联动配置：
+如果选用推理型模型（如 `step-3.7-flash`），注意三个联动配置：
 
 - `OPENAI_MAX_TOKENS`（默认 `32000`）：推理型模型会先在 `reasoning_content` 里消耗预算，设太小（如 2048）会导致答案被截断、`content` 返回空。实测单题 reasoning 长度在 2 万~9 万字符之间，32000 是起步值，不够可继续加大。
+- `OPENAI_REASONING_EFFORT`（默认 `low`）：同一道点选题实测 `low` 19.9s、`medium` 175.5s。不设（走模型默认）时单题 175s+，会顶穿 `EXECUTION_TIMEOUT`。精度换速度，若准确率不够可改 `medium`/`high` 并同步调大两个超时。
 - `OPENAI_REQUEST_TIMEOUT_SECONDS`（默认 `240`）与 `EXECUTION_TIMEOUT`（workflow 中固定 `300`）：实测单次解题请求耗时 40~200 秒波动极大，默认的 60 秒 LLM 超时和 120 秒执行预算都会把它掐断。调大 `max_tokens` 时必须同步确认这两个值。
+
+另外，「Drag the icon to complete the circle」题型由 `_resolve_ring_gap_paths` 用图像匹配确定性求解（不依赖 LLM），点选题仍走 LLM。
 
 说明：
 

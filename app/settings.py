@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 from pathlib import Path
+from typing import Literal
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
@@ -80,6 +81,13 @@ class EpicSettings(AgentConfig):
         gt=256,
         le=200000,
         description="Completion token budget; reasoning models need a large value",
+    )
+    OPENAI_REASONING_EFFORT: Literal["low", "medium", "high"] | None = Field(
+        default="low",
+        description=(
+            "Reasoning effort for reasoning models. 'low' answers in ~20s where the "
+            "default needs 175s+ and blows the challenge execution budget."
+        ),
     )
     OPENAI_REQUEST_TIMEOUT_SECONDS: float = Field(default=240.0, gt=5.0, le=600.0)
 

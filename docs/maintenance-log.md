@@ -1428,3 +1428,29 @@
   - 新增 `_resolve_ring_gap_paths`（`app/extensions/hcaptcha_adapter.py`）：题目含 circle+drag 时启用。流程=下载 payload 自带 `entity_uri` 图标做模板（该图标与圆环图标同形态）→ 多尺度多旋转模板匹配找圆环成员 → 排除 Move 盒（位置由 payload `entity.coords`+canvas origin 已知）→ RANSAC 圆拟合 → **最小二乘拟合槽位相位与间隔**（用 gap 中位数会让误差随槽位累积，slot 11 偏移 6.8°≈12.7px 超出探测窗）→ 每个期望槽位做 ±8px 偏移容差模板探测 → 得分最低且低于次优 50% 的槽位即缺口 → canvas 坐标经 `_map_canvas_points_to_page` 转 page 坐标。不置信则回落 LLM。
   - 在 `patched_challenge_image_drag_drop` 中于 `_resolve_outline_paths` 之前、LLM 回退之前接入。
   - 验证（ targeted 非测试脚本，仓库不允许执行测试）：对本次 run 产物中 **6 个真实拖拽题**逐一跑 `_resolve_ring_gap_paths`，全部解出且缺口为清晰离群点（gap 0.103–0.214 vs 次优 0.467–0.736，边际 2.7x–6.9x）。`uv run ruff check` 通过、`uv run black -C -l 100` 已格式化、`scripts/check_hcaptcha_contract.py` 通过。新增 `tests/test_ring_gap_solver.py` 仅静态回归保护（门禁判定、RANSAC 圆拟合抗离群、模板变体生成）。
+
+## 2026-10-26（再追加）
+
+### run 40233811044：几何求解器 CI 实测通过 + reasoning_effort=low
+
+- 现象：
+  - `run 40233811044` 仍失败（step 10 exit 1），但阻塞点再次转移。确定性求解器**在 CI 中完全生效且被 hCaptcha 接受**：
+    - `21:12:14 Resolved hCaptcha ring gap by template probing | ring=(201,295) r=107 slots=12 gap_score=0.243 runner_up=0.668 target=(697,395)` → `signal=success`
+    - 同样成功出现在 21:12:53、21:13:09、21:13:37、21:22:14，每次从 `Start Challenge` 到解出仅 **5 秒**（LLM 时代需 207 秒）。
+  - 剩余失败点：① `image_label_multi_select`（点选题）仍走 LLM，实测单题 4.5 分钟，5 次登录尝试中 3 次死于它；② 有一次 hCaptcha 全成功后 Epic 返回 `errors.com.epicgames.accountportal.captcha_invalid`；③ 有一次几何求解器不置信（`gap=0.381 runner_up=0.657`）回落 LLM，又耗 3 分钟超时。
+- 根因判断：
+  - 点选题是语义任务（「选择瞄准星星的 3 个箭头」），无法几何化，必须 LLM；但 `step-3.7-flash` 默认 effort 单题要 175s+，`EXECUTION_TIMEOUT=300` 与 `OPENAI_REQUEST_TIMEOUT_SECONDS=240` 都装不下，必然超时。
+  - 本地用该次 run 真实点选题图实测：`reasoning_effort=low` **19.9s**（reasoning 7782 字符）vs `medium` **175.5s**（reasoning 86384 字符）——差 8.8 倍，两者都返回 3 个点。
+- 改动文件：
+  - `app/settings.py`
+  - `app/extensions/llm_adapter.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `.env.example`
+  - `README.md`
+  - `tests/test_openai_provider.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增 `OPENAI_REASONING_EFFORT`（`Literal["low","medium","high"] | None`，默认 `low`），仅 openai 路线注入 payload 的 `reasoning_effort`；GLM 路线不注入（新增断言守住）。
+  - workflow 透传 `OPENAI_REASONING_EFFORT: ${{ vars.OPENAI_REASONING_EFFORT || 'low' }}`；`.env.example` 与 README 说明与两个超时的联动。
+  - 验证：`uv run ruff check` 通过、`uv run black -C -l 100` 已格式化、`scripts/check_hcaptcha_contract.py` 通过、workflow YAML `safe_load` 通过且 env 值正确；本地真实 settings 单例验证 payload 含 `max_tokens=32000` 与 `reasoning_effort=low`。
+  - 未解决：`captcha_invalid`（hCaptcha 判定成功但 Epic 拒收 token）与点选题在 low effort 下的准确率，需下一轮 run 观察。

@@ -563,7 +563,15 @@ def _extract_points_from_value(value: Any) -> list[dict[str, int]]:
     return []
 
 
-POINT_PAIR_KEYS = ("point_2d", "point2d", "point", "coordinate", "coordinates", "center", "position")
+POINT_PAIR_KEYS = (
+    "point_2d",
+    "point2d",
+    "point",
+    "coordinate",
+    "coordinates",
+    "center",
+    "position",
+)
 
 
 def _coerce_point(value: Any) -> dict[str, int] | None:
@@ -1058,6 +1066,7 @@ class _OpenAIEndpoint:
     timeout: float
     label: str
     max_tokens: int | None = None
+    reasoning_effort: str | None = None
 
 
 def _resolve_glm_endpoint(settings: Any) -> _OpenAIEndpoint:
@@ -1076,6 +1085,7 @@ def _resolve_openai_endpoint(settings: Any) -> _OpenAIEndpoint:
         timeout=float(settings.OPENAI_REQUEST_TIMEOUT_SECONDS),
         label="OpenAI",
         max_tokens=getattr(settings, "OPENAI_MAX_TOKENS", None),
+        reasoning_effort=getattr(settings, "OPENAI_REASONING_EFFORT", None),
     )
 
 
@@ -1212,6 +1222,11 @@ class _GLMAsyncModels:
             # Reasoning models spend the budget on `reasoning_content` first; a small
             # cap truncates the answer and leaves `content` empty (observed at 2048).
             payload["max_tokens"] = self._endpoint.max_tokens
+
+        if self._endpoint is not None and self._endpoint.reasoning_effort:
+            # The default effort spends minutes per challenge and overruns the
+            # execution budget; "low" answers in ~20s with usable coordinates.
+            payload["reasoning_effort"] = self._endpoint.reasoning_effort
 
         if thinking_payload := _glm_thinking_payload(model, config):
             payload["thinking"] = thinking_payload

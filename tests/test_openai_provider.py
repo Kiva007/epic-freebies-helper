@@ -27,6 +27,7 @@ def _openai_settings(**overrides):
         OPENAI_BASE_URL="https://api.example.invalid/v1",
         OPENAI_MODEL="step-3.7-flash",
         OPENAI_MAX_TOKENS=32000,
+        OPENAI_REASONING_EFFORT="low",
         OPENAI_REQUEST_TIMEOUT_SECONDS=45,
         GLM_API_KEY=None,
         GEMINI_API_KEY=None,
@@ -97,6 +98,7 @@ def test_openai_endpoint_resolution():
     assert endpoint.timeout == 45.0
     assert endpoint.label == "OpenAI"
     assert endpoint.max_tokens == 32000
+    assert endpoint.reasoning_effort == "low"
 
 
 def test_openai_payload_carries_max_tokens():
@@ -107,6 +109,7 @@ def test_openai_payload_carries_max_tokens():
         model="step-3.7-flash", contents=[], config=_config(schema=ChallengeRouterResult), kwargs={}
     )
     assert payload["max_tokens"] == 32000
+    assert payload["reasoning_effort"] == "low"
 
 
 def test_glm_payload_has_no_max_tokens():
@@ -116,6 +119,7 @@ def test_glm_payload_has_no_max_tokens():
         model="glm-4.6v", contents=[], config=_config(schema=ChallengeRouterResult), kwargs={}
     )
     assert "max_tokens" not in payload
+    assert "reasoning_effort" not in payload
 
 
 def test_openai_namespace_wires_endpoint():
