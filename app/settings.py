@@ -75,7 +75,13 @@ class EpicSettings(AgentConfig):
         default="gpt-4o-mini",
         description="Vision-capable model served by the OpenAI-compatible endpoint",
     )
-    OPENAI_REQUEST_TIMEOUT_SECONDS: float = Field(default=60.0, gt=5.0, le=120.0)
+    OPENAI_MAX_TOKENS: int = Field(
+        default=32000,
+        gt=256,
+        le=200000,
+        description="Completion token budget; reasoning models need a large value",
+    )
+    OPENAI_REQUEST_TIMEOUT_SECONDS: float = Field(default=240.0, gt=5.0, le=600.0)
 
     BROWSER_BACKEND: str = Field(
         default="auto", description="Supported values: auto, camoufox, playwright"

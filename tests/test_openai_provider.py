@@ -26,6 +26,7 @@ def _openai_settings(**overrides):
         OPENAI_API_KEY=SecretStr("test-key"),
         OPENAI_BASE_URL="https://api.example.invalid/v1",
         OPENAI_MODEL="step-3.7-flash",
+        OPENAI_MAX_TOKENS=32000,
         OPENAI_REQUEST_TIMEOUT_SECONDS=45,
         GLM_API_KEY=None,
         GEMINI_API_KEY=None,
@@ -95,6 +96,26 @@ def test_openai_endpoint_resolution():
     assert endpoint.api_key == "test-key"
     assert endpoint.timeout == 45.0
     assert endpoint.label == "OpenAI"
+    assert endpoint.max_tokens == 32000
+
+
+def test_openai_payload_carries_max_tokens():
+    """Reasoning models need a large budget or `content` comes back empty."""
+    settings = _openai_settings()
+    models = _GLMAsyncModels(settings, {}, endpoint=_resolve_openai_endpoint(settings))
+    payload = models._build_payload(
+        model="step-3.7-flash", contents=[], config=_config(schema=ChallengeRouterResult), kwargs={}
+    )
+    assert payload["max_tokens"] == 32000
+
+
+def test_glm_payload_has_no_max_tokens():
+    """GLM route behavior must stay unchanged."""
+    models = _GLMAsyncModels(settings=None, storage={})
+    payload = models._build_payload(
+        model="glm-4.6v", contents=[], config=_config(schema=ChallengeRouterResult), kwargs={}
+    )
+    assert "max_tokens" not in payload
 
 
 def test_openai_namespace_wires_endpoint():

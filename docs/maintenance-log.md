@@ -1382,3 +1382,28 @@
   - 推理模型兼容：`_extract_text` 在 `content` 为空时回退 `reasoning_content`/`reasoning`；错误日志前缀随 endpoint label 泛化。
   - 通用性防御：端点显式不支持 JSON mode（HTTP 400，如 SiliconFlow code 20024）时对该模型一次性去掉 `response_format` 重发，其他 400 不掩盖。
   - 验证（仓库不允许执行测试，采用静态审查 + lint + 定向非测试验证）：`uv run ruff check` 全部通过；`uv run black -C -l 100` 已格式化；CI 同款 `scripts/check_hcaptcha_contract.py` 通过（4 challenge types, 16 request types）；真实端点冒烟通过——stepfun `step-3.7-flash` 带图请求经补丁客户端返回正确答案；新增 `tests/test_openai_provider.py` 覆盖 provider 分发、端点解析、URL/鉴权、JSON mode 降级重试、reasoning 兜底、settings 默认值与 workflow env 透传。
+
+## 2026-10-25（追加）
+
+### openai 路线实测调优：max_tokens 与双层超时
+
+- 现象：
+  - `feat/openai-compatible-provider` 分支首次实跑（run `40224982135`）失败：补丁本身生效（日志 `🚀 OpenAI 兼容补丁已应用 | 模型: step-3.7-flash`），但 5 次登录尝试全部 `OpenAI request timed out after 60 seconds (ReadTimeout)` → `Challenge execution timed out` → `Epic Games authentication failed after 5 attempts` → `RuntimeError: Authentication failed, aborting this run`。
+- 根因判断：
+  - 实测（用该次 run 的真实题图，本地直连 stepfun）：`image_drag_single` 与 `image_label_area_select` 都会走 `_spatial_*_reasoner`，把 `challenge_view`(312KB) + `grid_divisions`(739KB) **两张图一起发给 LLM**（`hcaptcha_challenger/agent/challenger.py:628-629`、`658-659`）。
+  - `step-3.7-flash` 是推理模型，单次请求耗时 8~200 秒波动极大；实测样本：area_select 单图 8.4s、drag 单图 77.1s、drag 双图 41.9s / 200.8s。60 秒的 LLM 超时装不下。
+  - `max_tokens=2048` 时同图请求挂起 180s+ 不返回；`max_tokens=32000` 时 drag 双图最坏情况 reasoning 达 94589 字符、`finish_reason=length`、`content` 为空（已由 `_extract_text` 的 `reasoning_content` 兜底接住）。
+  - challenger 侧 `EXECUTION_TIMEOUT` 默认 120 秒会包住整个解题流程（`agent/challenger.py:910`），即使放宽 LLM 超时也会在 120 秒处被掐断。
+- 改动文件：
+  - `app/settings.py`
+  - `app/extensions/llm_adapter.py`
+  - `.github/workflows/epic-gamer.yml`
+  - `.env.example`
+  - `README.md`
+  - `tests/test_openai_provider.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增 `OPENAI_MAX_TOKENS`（默认 32000，`gt=256, le=200000`），仅对 openai 路线注入 payload 的 `max_tokens`；GLM 路线不注入，行为保持不变（新增 `test_glm_payload_has_no_max_tokens` 守住这条）。
+  - `OPENAI_REQUEST_TIMEOUT_SECONDS` 默认 60 → 240，上限 120 → 600。
+  - workflow 固定 `EXECUTION_TIMEOUT: 300`（> LLM 超时 240），`.env.example` 同步为 300 并注明联动关系。
+  - 验证：`uv run ruff check` 通过；`uv run black -C -l 100` 已格式化；`scripts/check_hcaptcha_contract.py` 通过；workflow YAML `safe_load` 通过；本地用真实 settings 单例验证补丁 payload 含 `max_tokens=32000`、endpoint timeout=240.0。仓库不允许执行测试，`tests/test_openai_provider.py` 仅静态新增用例（openai payload 带 max_tokens、GLM payload 不带）。

@@ -1044,6 +1044,7 @@ class _OpenAIEndpoint:
     api_key: str
     timeout: float
     label: str
+    max_tokens: int | None = None
 
 
 def _resolve_glm_endpoint(settings: Any) -> _OpenAIEndpoint:
@@ -1061,6 +1062,7 @@ def _resolve_openai_endpoint(settings: Any) -> _OpenAIEndpoint:
         api_key=settings.OPENAI_API_KEY.get_secret_value(),
         timeout=float(settings.OPENAI_REQUEST_TIMEOUT_SECONDS),
         label="OpenAI",
+        max_tokens=getattr(settings, "OPENAI_MAX_TOKENS", None),
     )
 
 
@@ -1192,6 +1194,11 @@ class _GLMAsyncModels:
             and model not in self._models_without_json_mode
         ):
             payload["response_format"] = {"type": "json_object"}
+
+        if self._endpoint is not None and self._endpoint.max_tokens:
+            # Reasoning models spend the budget on `reasoning_content` first; a small
+            # cap truncates the answer and leaves `content` empty (observed at 2048).
+            payload["max_tokens"] = self._endpoint.max_tokens
 
         if thinking_payload := _glm_thinking_payload(model, config):
             payload["thinking"] = thinking_payload
