@@ -1454,3 +1454,21 @@
   - workflow 透传 `OPENAI_REASONING_EFFORT: ${{ vars.OPENAI_REASONING_EFFORT || 'low' }}`；`.env.example` 与 README 说明与两个超时的联动。
   - 验证：`uv run ruff check` 通过、`uv run black -C -l 100` 已格式化、`scripts/check_hcaptcha_contract.py` 通过、workflow YAML `safe_load` 通过且 env 值正确；本地真实 settings 单例验证 payload 含 `max_tokens=32000` 与 `reasoning_effort=low`。
   - 未解决：`captcha_invalid`（hCaptcha 判定成功但 Epic 拒收 token）与点选题在 low effort 下的准确率，需下一轮 run 观察。
+
+## 2026-10-26（第三次追加）
+
+### run 40236239551：点选题坐标越界被自身校验拒绝
+
+- 现象：
+  - `run 40236239551` 失败。点选题 LLM 已因 `reasoning_effort=low` 大幅加速（最快一次 20s 返回坐标），拖拽题仍 6 秒解出且 `signal=success`；但 5 次登录尝试全部以 `TimeoutError('Timed out waiting for Epic login outcome')` 结束。
+  - 日志显示真正的中断点：`WARNING hcaptcha_adapter:patched_challenge_image_label_select:1034 - Rejected unsafe hCaptcha point answer | reason=point (531.0, 573.0) is outside challenge bounds (390.0, 99.5, 890.0, 569.5)` → `ERROR challenger:_solve_captcha:900 - ChallengeException - type=image_label_multi_select err=ValueError('Unsafe hCaptcha point answer: ...')`。
+- 根因判断：
+  - challenge 边界 `(390.0, 99.5, 890.0, 569.5)` 即图上印刷网格范围，模型返回的 y 值系统性向下越界（实测 573、635，上限 569.5）。app 原有的 `_point_answer_validation_error` 安全校验把**整个答案**拒绝并抛 `ValueError`，等于把「近距离偏差」变成「必然登录超时」。
+- 改动文件：
+  - `app/extensions/hcaptcha_adapter.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - 新增 `_clamp_points_into_bounds`：偏离在边界 20% 以内的点夹回边界内（下界 `ceil`、上界 `floor`，避免取整后再次越界）后继续点击；偏离超过 20% 视为模型丢失坐标系，原样返回让原有校验拒绝并走重试路径。
+  - `patched_challenge_image_label_select` 改为先夹取再校验，点击使用夹取后的点。
+  - 验证：`uv run ruff check` 通过、`uv run black -C -l 100` 已格式化、`scripts/check_hcaptcha_contract.py` 通过；本地用 CI 真实坐标 `(531,573)/(568,395)/(801,635)` 与边界 `(390,99.5,890,569.5)` 验证——近距离偏差夹成 `(531,569)/(568,395)/(801,569)` 且校验通过，垃圾坐标 `(82,0)` 仍被拒绝，空列表仍报「model returned no click points」。
+  - 未解决：点选题在 low effort 下的答案准确率、以及此前出现的 `captcha_invalid`（hCaptcha 判定成功但 Epic 拒收 token），需下一轮 run 观察。

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import itertools
+import math
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,64 @@ def _map_image_bounds_to_page(
         float(challenge_bbox["x"]) + x_max * scale_x,
         float(challenge_bbox["y"]) + y_max * scale_y,
     )
+
+
+def _clamp_points_into_bounds(
+    points: list[Any],
+    *,
+    challenge_bbox: dict[str, float] | None,
+    clickable_bounds: tuple[float, float, float, float] | None,
+    tolerance: float = 0.2,
+) -> list[Any]:
+    """Pull near-miss points back inside the challenge instead of failing the attempt.
+
+    Reasoning models routinely overshoot the prompt-stated bounds by tens of pixels
+    (observed y=573 and y=635 against a 569.5 limit). Rejecting the whole answer turns
+    a near miss into a guaranteed login timeout; a clamped point stays a valid click.
+    A point that is wildly outside means the model lost the coordinate system, so the
+    original points are returned untouched and the caller's validation rejects them.
+    """
+    if challenge_bbox is None or not points:
+        return points
+
+    limits = (
+        clickable_bounds
+        if clickable_bounds is not None
+        else (
+            float(challenge_bbox["x"]),
+            float(challenge_bbox["y"]),
+            float(challenge_bbox["x"]) + float(challenge_bbox["width"]),
+            float(challenge_bbox["y"]) + float(challenge_bbox["height"]),
+        )
+    )
+    slack_x = (limits[2] - limits[0]) * tolerance
+    slack_y = (limits[3] - limits[1]) * tolerance
+    lower_x, lower_y = math.ceil(limits[0]), math.ceil(limits[1])
+    upper_x, upper_y = math.floor(limits[2]), math.floor(limits[3])
+
+    clamped: list[Any] = []
+    for point in points:
+        raw_x, raw_y = float(point.x), float(point.y)
+        if (
+            raw_x < limits[0] - slack_x
+            or raw_x > limits[2] + slack_x
+            or raw_y < limits[1] - slack_y
+            or raw_y > limits[3] + slack_y
+        ):
+            return points
+
+        x = min(max(raw_x, lower_x), upper_x)
+        y = min(max(raw_y, lower_y), upper_y)
+        if (x, y) != (raw_x, raw_y):
+            logger.info(
+                "Clamped hCaptcha point ({:.0f},{:.0f}) into bounds ({:.0f},{:.0f})",
+                raw_x,
+                raw_y,
+                x,
+                y,
+            )
+        clamped.append(PointCoordinate(x=int(x), y=int(y)))
+    return clamped
 
 
 def _point_answer_validation_error(
@@ -1025,10 +1084,13 @@ def apply_hcaptcha_drag_patch() -> None:
                 )
                 logger.debug(f'[{cid+1}/{crumb_count}]ToolInvokeMessage: {response.log_message}')
 
-                validation_error = _point_answer_validation_error(
+                points = _clamp_points_into_bounds(
                     response.points,
                     challenge_bbox=challenge_bbox,
                     clickable_bounds=clickable_bounds,
+                )
+                validation_error = _point_answer_validation_error(
+                    points, challenge_bbox=challenge_bbox, clickable_bounds=clickable_bounds
                 )
                 if validation_error is not None:
                     logger.warning(
@@ -1039,7 +1101,7 @@ def apply_hcaptcha_drag_patch() -> None:
                 self._spatial_point_reasoner.cache_response(
                     path=cache_key.joinpath(f"{cache_key.name}_{cid}_model_answer.json")
                 )
-                for point in response.points:
+                for point in points:
                     await self.page.mouse.click(point.x, point.y, delay=180)
                     await self.page.wait_for_timeout(500)
 
