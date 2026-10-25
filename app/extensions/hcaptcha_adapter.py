@@ -458,6 +458,319 @@ def _is_line_completion_question(question: str) -> bool:
     return "segment" in normalized and "line" in normalized
 
 
+def _is_ring_completion_question(question: str) -> bool:
+    normalized = question.lower()
+    return "circle" in normalized and "drag" in normalized
+
+
+def _ring_template_variants(icon: np.ndarray) -> list[tuple[np.ndarray, int]]:
+    """Grayscale, mid-gray-composited icon rotations used for ring matching."""
+    if icon.ndim == 3 and icon.shape[2] == 4:
+        alpha = icon[:, :, 3].astype(float) / 255.0
+        composited = icon[:, :, :3].astype(float) * alpha[:, :, None] + 128 * (
+            1 - alpha[:, :, None]
+        )
+        gray = cv2.cvtColor(composited.astype(np.uint8), cv2.COLOR_BGR2GRAY)
+    else:
+        gray = cv2.cvtColor(icon, cv2.COLOR_BGR2GRAY) if icon.ndim == 3 else icon
+
+    height, width = gray.shape[:2]
+    variants: list[tuple[np.ndarray, int]] = []
+    for scale in (0.85, 1.0, 1.15):
+        sized = (
+            gray
+            if scale == 1.0
+            else cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        )
+        sh, sw = sized.shape[:2]
+        for angle in range(0, 360, 10):
+            matrix = cv2.getRotationMatrix2D((sw / 2, sh / 2), angle, 1.0)
+            rotated = cv2.warpAffine(sized, matrix, (sw, sh), borderValue=128)
+            variants.append((rotated, angle))
+    return variants
+
+
+def _ransac_ring(
+    points: np.ndarray, *, tolerance: float = 0.18
+) -> tuple[np.ndarray, float, float, float] | None:
+    """Fit a circle to icon centres, robust to stray template matches."""
+    if len(points) < 4:
+        return None
+
+    rng = np.random.default_rng(0)
+    best: tuple[int, float, float, float, np.ndarray] | None = None
+    for _ in range(4000):
+        i, j, k = rng.choice(len(points), 3, replace=False)
+        p, q, s = points[i], points[j], points[k]
+        determinant = 2 * (p[0] * (q[1] - s[1]) + q[0] * (s[1] - p[1]) + s[0] * (p[1] - q[1]))
+        if abs(determinant) < 1e-6:
+            continue
+        ux = (
+            (p[0] ** 2 + p[1] ** 2) * (q[1] - s[1])
+            + (q[0] ** 2 + q[1] ** 2) * (s[1] - p[1])
+            + (s[0] ** 2 + s[1] ** 2) * (p[1] - q[1])
+        ) / determinant
+        uy = (
+            (p[0] ** 2 + p[1] ** 2) * (s[0] - q[0])
+            + (q[0] ** 2 + q[1] ** 2) * (p[0] - s[0])
+            + (s[0] ** 2 + s[1] ** 2) * (q[0] - p[0])
+        ) / determinant
+        radius = float(np.hypot(p[0] - ux, p[1] - uy))
+        if radius < 40 or radius > 400:
+            continue
+        inliers = (
+            np.abs(np.hypot(points[:, 0] - ux, points[:, 1] - uy) - radius) < tolerance * radius
+        )
+        if best is None or inliers.sum() > best[0]:
+            best = (int(inliers.sum()), ux, uy, radius, inliers)
+
+    if best is None or best[0] < 4:
+        return None
+
+    ring = points[best[4]]
+    design = np.c_[ring[:, 0], ring[:, 1], np.ones(len(ring))]
+    target = ring[:, 0] ** 2 + ring[:, 1] ** 2
+    solution, *_ = np.linalg.lstsq(design, target, rcond=None)
+    cx, cy = solution[0] / 2, solution[1] / 2
+    radius = float(np.sqrt(solution[2] + cx**2 + cy**2))
+    return ring, cx, cy, radius
+
+
+async def _resolve_ring_gap_paths(
+    *,
+    captcha_payload: Any,
+    crumb_id: int,
+    challenge_screenshot: Path,
+    challenge_bbox: dict[str, float] | None,
+) -> list[SpatialPath] | None:
+    """Solve "drag the icon to complete the circle" geometrically.
+
+    The vision model cannot localise the single empty slot reliably, so detect every
+    placed icon with the payload's own entity image, fit the ring, and probe each
+    expected slot: the slot that matches no icon is the drop target.
+    """
+    question = ""
+    with suppress(Exception):
+        question = captcha_payload.get_requester_question().lower()
+    if not _is_ring_completion_question(question):
+        return None
+
+    tasklist = getattr(captcha_payload, "tasklist", None) or []
+    if crumb_id < 0 or crumb_id >= len(tasklist):
+        return None
+    entities = getattr(tasklist[crumb_id], "entities", None) or []
+    if len(entities) != 1:
+        return None
+
+    image = cv2.imread(str(challenge_screenshot))
+    canvas_origin = _detect_task_canvas_origin(challenge_screenshot)
+    if image is None or canvas_origin is None:
+        return None
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(str(entities[0].entity_uri))
+            response.raise_for_status()
+    except Exception as err:
+        logger.warning("Could not load hCaptcha drag entity for ring matching: {!r}", err)
+        return None
+
+    icon = cv2.imdecode(np.frombuffer(response.content, np.uint8), cv2.IMREAD_UNCHANGED)
+    if icon is None:
+        return None
+
+    variants = _ring_template_variants(icon)
+    hits: list[tuple[float, int, int]] = []
+    for template, _angle in variants:
+        th, tw = template.shape[:2]
+        if tw >= gray.shape[1] or th >= gray.shape[0]:
+            continue
+        result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+        ys, xs = np.where(result > 0.5)
+        for x, y in zip(xs, ys):
+            hits.append((float(result[y, x]), int(x) + tw // 2, int(y) + th // 2))
+
+    hits.sort(reverse=True)
+    kept: list[tuple[float, int, int]] = []
+    for score, x, y in hits:
+        if all((x - kx) ** 2 + (y - ky) ** 2 > 49**2 for _, kx, ky in kept):
+            kept.append((score, x, y))
+    if len(kept) < 4:
+        return None
+
+    points = np.array([[x, y] for _, x, y in kept], dtype=float)
+    # Drop the draggable icon sitting in the "Move" box; only ring members matter.
+    move_box = (
+        int(entities[0].coords[0]) + canvas_origin[0],
+        int(entities[0].coords[1]) + canvas_origin[1],
+    )
+    points = points[np.hypot(points[:, 0] - move_box[0], points[:, 1] - move_box[1]) > 70]
+
+    ring_points = points
+    gap_score = runner_up = 0.0
+    gap_x = gap_y = 0
+    slot_phase = 0.0
+    base_spacing = 30.0
+    slot_count = 12
+    cx = cy = radius = 0.0
+
+    # Confirmed slots (a real icon was found there) refine the ring fit, which in turn
+    # sharpens the remaining slot positions. Two passes are enough in practice.
+    for _ in range(2):
+        fitted = _ransac_ring(ring_points)
+        if fitted is None:
+            return None
+        ring_inliers, cx, cy, radius = fitted
+        ring_points = ring_inliers
+
+        # Fit slot phase and spacing by least squares. Estimating the spacing from a
+        # single gap median lets the error accumulate, which displaces late slots by
+        # more than the probe window and hides real icons.
+        ring_angles = np.degrees(np.arctan2(ring_inliers[:, 1] - cy, ring_inliers[:, 0] - cx)) % 360
+        sorted_angles = np.sort(ring_angles)
+        raw_gaps = np.diff(np.concatenate([sorted_angles, sorted_angles[:1] + 360]))
+        candidates = sorted({float(np.min(raw_gaps)), float(np.median(raw_gaps))})
+
+        best_fit: tuple[float, float, float, int] | None = None
+        for candidate in candidates:
+            if candidate <= 0:
+                continue
+            unwrapped = sorted_angles - sorted_angles[0]
+            indices = np.round(unwrapped / candidate)
+            if indices.max() == indices.min():
+                continue
+            index_mean = float(indices.mean())
+            angle_mean = float(unwrapped.mean())
+            denominator = float(((indices - index_mean) ** 2).sum())
+            if denominator < 1e-9:
+                continue
+            spacing = float(((indices - index_mean) * (unwrapped - angle_mean)).sum() / denominator)
+            if spacing <= 1 or spacing > 90:
+                continue
+            offset = angle_mean - spacing * index_mean
+            residual = float(np.abs(unwrapped - offset - indices * spacing).max())
+            count = int(round(360 / spacing))
+            if not 6 <= count <= 24:
+                continue
+            if best_fit is None or (residual, spacing) < (best_fit[0], best_fit[1]):
+                best_fit = (residual, spacing, offset, count)
+
+        if best_fit is None:
+            return None
+        _residual, base_spacing, slot_offset, slot_count = best_fit
+        slot_phase = float(sorted_angles[0]) + slot_offset
+
+    def probe(slot: int) -> tuple[float, int, int, int, int] | None:
+        """Best template score near the expected slot centre (offset-tolerant).
+
+        A filled slot scores high once the small ring-fit error is absorbed by the
+        local offset search; the empty slot stays low wherever it is probed.
+        Returns (score, slot_x, slot_y, hit_x, hit_y).
+        """
+        angle = np.radians(slot_phase + slot * base_spacing)
+        sx = int(round(cx + radius * np.cos(angle)))
+        sy = int(round(cy + radius * np.sin(angle)))
+        margin = 8
+        best = -1.0
+        best_at = (sx, sy)
+        for template, _angle_value in variants:
+            th, tw = template.shape[:2]
+            x0, y0 = sx - tw // 2 - margin, sy - th // 2 - margin
+            x1, y1 = x0 + tw + 2 * margin, y0 + th + 2 * margin
+            if x0 < 0 or y0 < 0 or x1 > gray.shape[1] or y1 > gray.shape[0]:
+                continue
+            patch = gray[y0:y1, x0:x1]
+            result = cv2.matchTemplate(patch, template, cv2.TM_CCOEFF_NORMED)
+            flat = int(result.argmax())
+            hy, hx = divmod(flat, result.shape[1])
+            score = float(result[hy, hx])
+            if score > best:
+                best = score
+                best_at = (x0 + hx + tw // 2, y0 + hy + th // 2)
+        if best < -0.5:
+            return None
+        return best, sx, sy, best_at[0], best_at[1]
+
+    ring_points = points
+    gap_score = runner_up = 0.0
+    gap_x = gap_y = 0
+
+    # Confirmed slots (a real icon was found there) refine the ring fit, which in turn
+    # sharpens the remaining slot positions. Two passes are enough in practice.
+    for _ in range(2):
+        fitted = _ransac_ring(ring_points)
+        if fitted is None:
+            return None
+        ring_inliers, cx, cy, radius = fitted
+        ring_points = ring_inliers
+
+        current: list[tuple[int, float, int, int, int, int]] = []
+        for slot in range(slot_count):
+            probed = probe(slot)
+            if probed is None:
+                continue
+            score, sx, sy, hx, hy = probed
+            current.append((slot, score, sx, sy, hx, hy))
+        if len(current) < 4:
+            return None
+
+        scores = sorted(item[1] for item in current)
+        strongest = scores[-1]
+        confirmed = [item for item in current if item[1] > 0.6 * strongest]
+        if len(confirmed) >= 4:
+            refined = np.array([[item[4], item[5]] for item in confirmed], dtype=float)
+            ring_points = np.unique(np.vstack([ring_points, refined]), axis=0)
+
+        current.sort(key=lambda item: item[1])
+        gap_score = current[0][1]
+        gap_x, gap_y = current[0][2], current[0][3]
+        runner_up = current[1][1]
+
+    if gap_score >= 0.5 * runner_up or gap_score >= 0.25:
+        logger.info(
+            "hCaptcha ring gap not confident | gap={:.3f} runner_up={:.3f}; falling back to LLM",
+            gap_score,
+            runner_up,
+        )
+        return None
+
+    source_points = _payload_source_points(
+        captcha_payload=captcha_payload,
+        crumb_id=crumb_id,
+        challenge_screenshot=challenge_screenshot,
+        challenge_bbox=challenge_bbox,
+    )
+    if len(source_points) != 1 or not challenge_bbox:
+        return None
+
+    # The gap is known in screenshot pixels; convert to canvas space for page mapping.
+    canvas_point = (gap_x - canvas_origin[0], gap_y - canvas_origin[1])
+    target_points = _map_canvas_points_to_page(
+        [canvas_point], challenge_screenshot=challenge_screenshot, challenge_bbox=challenge_bbox
+    )
+    if len(target_points) != 1:
+        return None
+
+    logger.info(
+        "Resolved hCaptcha ring gap by template probing | ring=({:.0f},{:.0f}) r={:.0f} "
+        "slots={} gap_score={:.3f} runner_up={:.3f} target={}",
+        cx,
+        cy,
+        radius,
+        slot_count,
+        gap_score,
+        runner_up,
+        target_points[0],
+    )
+    return [
+        SpatialPath(
+            start_point=PointCoordinate(x=source_points[0][0], y=source_points[0][1]),
+            end_point=PointCoordinate(x=target_points[0][0], y=target_points[0][1]),
+        )
+    ]
+
+
 def _resolve_line_path(
     *,
     captcha_payload: Any,
@@ -758,6 +1071,13 @@ def apply_hcaptcha_drag_patch() -> None:
                 challenge_screenshot=raw,
                 challenge_bbox=challenge_bbox,
             )
+            if paths is None:
+                paths = await _resolve_ring_gap_paths(
+                    captcha_payload=self.captcha_payload,
+                    crumb_id=cid,
+                    challenge_screenshot=raw,
+                    challenge_bbox=challenge_bbox,
+                )
             if paths is None:
                 paths = await _resolve_outline_paths(
                     captcha_payload=self.captcha_payload,

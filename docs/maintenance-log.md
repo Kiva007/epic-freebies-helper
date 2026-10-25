@@ -1407,3 +1407,24 @@
   - `OPENAI_REQUEST_TIMEOUT_SECONDS` 默认 60 → 240，上限 120 → 600。
   - workflow 固定 `EXECUTION_TIMEOUT: 300`（> LLM 超时 240），`.env.example` 同步为 300 并注明联动关系。
   - 验证：`uv run ruff check` 通过；`uv run black -C -l 100` 已格式化；`scripts/check_hcaptcha_contract.py` 通过；workflow YAML `safe_load` 通过；本地用真实 settings 单例验证补丁 payload 含 `max_tokens=32000`、endpoint timeout=240.0。仓库不允许执行测试，`tests/test_openai_provider.py` 仅静态新增用例（openai payload 带 max_tokens、GLM payload 不带）。
+
+## 2026-10-26（追加）
+
+### 「Drag the icon to complete the circle」确定性求解器 + point_2d 兼容
+
+- 现象：
+  - `run 40227850158`（max_tokens=32000、LLM 超时 240s、EXECUTION_TIMEOUT 300）失败，但性质再次改变：LLM 超时问题已解决——首次拖拽题 19:51:14→19:54:41 用 **207 秒**返回答案 `from(831,284) to(500,300)`，被适配器解析并执行拖拽（`_correct_drag_source_points` 修正起点成功）。
+  - 新失败点两个：① 拖拽提交后 `Wait for captcha response timeout 30.0s`（hCaptcha 服务端 30s 无判定），5 次全如此；模型 `to` 目标波动极大：(500,300)→(831,284)零位移→(442,399)→(433,387)→(320,430)。② `image_label_multi_select` 报 `6 validation errors for ImageAreaSelectChallenge`：`points.0.x Field required`，`input_value={'point_2d': [533, 347], 'label': 'arrow aimed at star'}`。
+- 根因判断：
+  - **LLM 无法定位拖拽终点**：本地用该次 run 真实题图复现——area_select 单图 8.4s 可解，但拖拽题单图 77.1s、双图 41.9s/200.8s 波动极大；`reasoning_effort=low` 虽只要 23.2s 但坐标 `(476,792)` 完全错误；`step-5-preview` 300s 超时、`step-3.5-flash` 不支持图片、`step-3.7-flash/high` 撞 91742 字符上限。改 prompt（明确要求「找圆环唯一缺口、落在同一半径上」）同样失败。结论：该题型对视觉模型不可靠，需确定性求解。
+  - **`_coerce_point` 不认 `point_2d` 键**：`app/extensions/llm_adapter.py` 的 `_coerce_point` 对 dict 只认 `{"x":..,"y":..}`，遇到 `{"point_2d":[x,y]}` 返回 None，拖拽与点选两条路线都复用该函数故一并受影响。
+- 改动文件：
+  - `app/extensions/llm_adapter.py`
+  - `app/extensions/hcaptcha_adapter.py`
+  - `tests/test_ring_gap_solver.py`
+  - `docs/maintenance-log.md`
+- 处理结果：
+  - `_coerce_point` 新增 `POINT_PAIR_KEYS = ("point_2d","point2d","point","coordinate","coordinates","center","position")`，dict 遇这些键且值为 `[x,y]` 时返回 `{"x":x,"y":y}`，否则递归。
+  - 新增 `_resolve_ring_gap_paths`（`app/extensions/hcaptcha_adapter.py`）：题目含 circle+drag 时启用。流程=下载 payload 自带 `entity_uri` 图标做模板（该图标与圆环图标同形态）→ 多尺度多旋转模板匹配找圆环成员 → 排除 Move 盒（位置由 payload `entity.coords`+canvas origin 已知）→ RANSAC 圆拟合 → **最小二乘拟合槽位相位与间隔**（用 gap 中位数会让误差随槽位累积，slot 11 偏移 6.8°≈12.7px 超出探测窗）→ 每个期望槽位做 ±8px 偏移容差模板探测 → 得分最低且低于次优 50% 的槽位即缺口 → canvas 坐标经 `_map_canvas_points_to_page` 转 page 坐标。不置信则回落 LLM。
+  - 在 `patched_challenge_image_drag_drop` 中于 `_resolve_outline_paths` 之前、LLM 回退之前接入。
+  - 验证（ targeted 非测试脚本，仓库不允许执行测试）：对本次 run 产物中 **6 个真实拖拽题**逐一跑 `_resolve_ring_gap_paths`，全部解出且缺口为清晰离群点（gap 0.103–0.214 vs 次优 0.467–0.736，边际 2.7x–6.9x）。`uv run ruff check` 通过、`uv run black -C -l 100` 已格式化、`scripts/check_hcaptcha_contract.py` 通过。新增 `tests/test_ring_gap_solver.py` 仅静态回归保护（门禁判定、RANSAC 圆拟合抗离群、模板变体生成）。

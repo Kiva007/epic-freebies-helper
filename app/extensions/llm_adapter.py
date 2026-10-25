@@ -563,11 +563,24 @@ def _extract_points_from_value(value: Any) -> list[dict[str, int]]:
     return []
 
 
+POINT_PAIR_KEYS = ("point_2d", "point2d", "point", "coordinate", "coordinates", "center", "position")
+
+
 def _coerce_point(value: Any) -> dict[str, int] | None:
     try:
         if isinstance(value, dict):
             if "x" in value and "y" in value:
                 return {"x": int(value["x"]), "y": int(value["y"])}
+            # Reasoning models (e.g. step-3.7-flash) emit {"point_2d": [x, y], "label": ...}
+            for key in POINT_PAIR_KEYS:
+                if key not in value:
+                    continue
+                pair = value[key]
+                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                    return {"x": int(pair[0]), "y": int(pair[1])}
+                nested = _coerce_point(pair)
+                if nested:
+                    return nested
             return None
 
         if isinstance(value, (list, tuple)) and len(value) >= 2:
