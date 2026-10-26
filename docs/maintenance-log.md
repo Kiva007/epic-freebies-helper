@@ -1472,3 +1472,12 @@
   - `patched_challenge_image_label_select` 改为先夹取再校验，点击使用夹取后的点。
   - 验证：`uv run ruff check` 通过、`uv run black -C -l 100` 已格式化、`scripts/check_hcaptcha_contract.py` 通过；本地用 CI 真实坐标 `(531,573)/(568,395)/(801,635)` 与边界 `(390,99.5,890,569.5)` 验证——近距离偏差夹成 `(531,569)/(568,395)/(801,569)` 且校验通过，垃圾坐标 `(82,0)` 仍被拒绝，空列表仍报「model returned no click points」。
   - 未解决：点选题在 low effort 下的答案准确率、以及此前出现的 `captcha_invalid`（hCaptcha 判定成功但 Epic 拒收 token），需下一轮 run 观察。
+
+## 2026-10-26（第四次追加）
+
+### 单轮 step-5-preview 模型对照运行
+
+- 现象：此前 step-3.7-flash 的点选答案、坐标与耗时不稳定，尚无完整登录或领取成功证据。
+- 根因判断：模型能力与坐标理解仍是待验证假设；step-5-preview 本地调用约 179 秒/题图，不能据此确认答案正确，但两块题图可能超过原 300 秒执行预算。
+- 改动文件：`.github/workflows/epic-gamer.yml`、`docs/maintenance-log.md`；另将仓库 Actions variable `OPENAI_MODEL` 切为 `step-5-preview`。
+- 处理结果：按用户授权仅做一次完整 workflow 对照运行，请求超时设为 400 秒、解题执行预算设为 600 秒。保持原有题图输入、推理 effort、token 上限和确定性拖拽路线不变，不接入干净图或新增求解器。运行结果待收集；不将模型返回坐标或 workflow 启动视为登录/领取成功。

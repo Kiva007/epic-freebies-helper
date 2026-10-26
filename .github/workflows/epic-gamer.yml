@@ -79,8 +79,9 @@ jobs:
           OPENAI_MAX_TOKENS: ${{ vars.OPENAI_MAX_TOKENS || '32000' }}
           # 推理模型默认 effort 单题要 175s+，low 约 20s；点选题只有 LLM 能解，必须快
           OPENAI_REASONING_EFFORT: ${{ vars.OPENAI_REASONING_EFFORT || 'low' }}
-          # 推理型视觉模型解验证码实测 40-200s，需放宽 challenger 的执行预算（默认 120）
-          EXECUTION_TIMEOUT: 300
+          # step-5-preview 实测约 180s/tile，两块题图需更长的请求与执行预算
+          OPENAI_REQUEST_TIMEOUT_SECONDS: 400
+          EXECUTION_TIMEOUT: 600
           CHALLENGE_CLASSIFIER_MODEL: ${{ vars.CHALLENGE_CLASSIFIER_MODEL || secrets.CHALLENGE_CLASSIFIER_MODEL }}
           IMAGE_CLASSIFIER_MODEL: ${{ vars.IMAGE_CLASSIFIER_MODEL || secrets.IMAGE_CLASSIFIER_MODEL }}
           SPATIAL_POINT_REASONER_MODEL: ${{ vars.SPATIAL_POINT_REASONER_MODEL || secrets.SPATIAL_POINT_REASONER_MODEL }}
