@@ -1481,3 +1481,11 @@
 - 根因判断：模型能力与坐标理解仍是待验证假设；step-5-preview 本地调用约 179 秒/题图，不能据此确认答案正确，但两块题图可能超过原 300 秒执行预算。
 - 改动文件：`.github/workflows/epic-gamer.yml`、`docs/maintenance-log.md`；另将仓库 Actions variable `OPENAI_MODEL` 切为 `step-5-preview`。
 - 处理结果：按用户授权仅做一次完整 workflow 对照运行，请求超时设为 400 秒、解题执行预算设为 600 秒。保持原有题图输入、推理 effort、token 上限和确定性拖拽路线不变，不接入干净图或新增求解器。运行结果待收集；不将模型返回坐标或 workflow 启动视为登录/领取成功。
+
+### run 40281190090 结果：登录外层 180 秒上限提前取消求解
+
+- 现象：本次 workflow 失败，未完成登录，未进入游戏领取。运行横幅证实模型为 `step-5-preview`、请求超时 400 秒、执行预算 600 秒。前 3 次登录的第二阶段均遇到双题图点选挑战，随后在约 178.94–178.96 秒处出现 `context=login_mfa` 的 `TimeoutError()`，没有记录点选答案坐标。
+- 根因判断：`app/services/epic_authorization_service.py` 中 `_login` 以 25 秒（重提交后为 8 秒）调用 `_await_login_outcome`；该方法以 `max(timeout_seconds, 180)` 设置硬上限，并用 `min(EXECUTION_TIMEOUT + RESPONSE_TIMEOUT + 5, deadline 剩余时间)` 限制挑战等待。故上调 workflow 的两个超时并未贯通登录外层，不能据本轮判定 step-5-preview 解题错误或不可用。此前将所有点选失败归因于模型能力的说法过强。
+- 另有独立证据：6 次确定性拖拽题均返回 `signal=success`；第 5 次登录的第二道拖拽题成功后，Epic `POST /id/api/login` 返回 `errors.com.epicgames.accountportal.captcha_invalid` 和 `Incorrect response. Please refresh the page.`。因此挑战成功不等于 Epic 登录成功，具体拒收原因仍未确定。
+- 改动文件：本条仅追加 `docs/maintenance-log.md`，未改登录逻辑、未追加运行。
+- 处理结果：已收集 run/jobs 元数据与完整日志；所有日志/截图产物上传成功。模型变量仍为 `step-5-preview`，400/600 秒预算保留在实验分支；默认分支代码未合并。若继续，先修正登录外层预算联动，再单独调查 captcha_invalid，不能把本轮视为有效的模型准确率对照。
