@@ -1498,3 +1498,11 @@
 - 根因判断：`_await_login_outcome` 同时有固定 180 秒硬上限与 `captcha-visible` 的 180 秒延长值，两者都需联动配置；只改其中一处仍会提前取消。
 - 改动文件：`app/services/epic_authorization_service.py`、`docs/maintenance-log.md`。
 - 处理结果：挑战预算取 `EXECUTION_TIMEOUT + RESPONSE_TIMEOUT + 5`；登录硬上限至少容纳该预算加 120 秒收尾，验证码出现时 deadline 至少延长该挑战预算（受总硬上限限制）。普通无验证码登录的初始 25/8 秒等待不变，TOTP 重试限制不变，不修改模型、题图输入或答案校验。按仓库规定不执行测试套件；静态检查与单轮 CI 验证结果待记录。
+
+### run 40310141947 结果：外层预算联动生效，但点选流程仍未通过
+
+- 现象：运行约 58 分钟后以 authentication failed after 5 attempts 退出，未登录、未进入领取；未被 job 的 60 分钟硬上限终止。日志/截图/运行产物上传均成功。
+- 验证：Ruff、Black --check、git diff --check 通过。CI 的 `captcha-visible` 日志已显示 `seconds_remaining=635.0`，相应求解持续完整 600 秒，不再在 179 秒被取消，因此本轮预算联动修复有实际运行证据。
+- 新阻塞证据：第 1/2/4 次登录在首块题图返回坐标后，下一块截图连续出现 `Locator.screenshot: Timeout 30000ms exceeded`（找不到 challenge-view），后续恢复又抛 `AttributeError("'NoneType' object has no attribute 'locator'")`。只能确认挑战视图不可用，尚不能确定是页面过期、导航、挑战刷新或其他生命周期原因。
+- 第 3 次登录完整返回两块坐标（19:10:10 与 19:13:18），但提交后 `Wait for captcha response timeout 30.0s`；随后再次求解及第 5 次登录均耗尽 600 秒执行预算。模型坐标返回耗时为分钟级，部分返回仅一个点，但这些现象不足以单独判定答案错误或模型不支持。
+- 改动文件：本条仅追加 `docs/maintenance-log.md`。未继续上调超时、未修改截图/提交逻辑、未再触发运行。下一步需先用本轮截图及网络/挑战生命周期证据区分视图失效与提交无响应，不能再盲目扩大预算。
