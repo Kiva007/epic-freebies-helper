@@ -1489,3 +1489,12 @@
 - 另有独立证据：6 次确定性拖拽题均返回 `signal=success`；第 5 次登录的第二道拖拽题成功后，Epic `POST /id/api/login` 返回 `errors.com.epicgames.accountportal.captcha_invalid` 和 `Incorrect response. Please refresh the page.`。因此挑战成功不等于 Epic 登录成功，具体拒收原因仍未确定。
 - 改动文件：本条仅追加 `docs/maintenance-log.md`，未改登录逻辑、未追加运行。
 - 处理结果：已收集 run/jobs 元数据与完整日志；所有日志/截图产物上传成功。模型变量仍为 `step-5-preview`，400/600 秒预算保留在实验分支；默认分支代码未合并。若继续，先修正登录外层预算联动，再单独调查 captcha_invalid，不能把本轮视为有效的模型准确率对照。
+
+## 2026-10-26（第五次追加）
+
+### 登录等待预算联动 challenger 配置
+
+- 现象：run 40281190090 中点选挑战在约 179 秒被登录外层取消，尽管配置已允许解题 600 秒。
+- 根因判断：`_await_login_outcome` 同时有固定 180 秒硬上限与 `captcha-visible` 的 180 秒延长值，两者都需联动配置；只改其中一处仍会提前取消。
+- 改动文件：`app/services/epic_authorization_service.py`、`docs/maintenance-log.md`。
+- 处理结果：挑战预算取 `EXECUTION_TIMEOUT + RESPONSE_TIMEOUT + 5`；登录硬上限至少容纳该预算加 120 秒收尾，验证码出现时 deadline 至少延长该挑战预算（受总硬上限限制）。普通无验证码登录的初始 25/8 秒等待不变，TOTP 重试限制不变，不修改模型、题图输入或答案校验。按仓库规定不执行测试套件；静态检查与单轮 CI 验证结果待记录。

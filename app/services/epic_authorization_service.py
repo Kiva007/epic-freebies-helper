@@ -366,7 +366,9 @@ class EpicAuthorization:
     ) -> None:
         started_at = time.monotonic()
         deadline = started_at + timeout_seconds
-        hard_timeout_seconds = max(timeout_seconds, 180)
+        challenge_timeout_seconds = settings.EXECUTION_TIMEOUT + settings.RESPONSE_TIMEOUT + 5
+        # Keep ordinary login waits short, but allow one full challenge plus login settlement.
+        hard_timeout_seconds = max(timeout_seconds, 180, challenge_timeout_seconds + 120)
         max_deadline = started_at + hard_timeout_seconds
         max_totp_attempts = 6
         max_invalid_totp_rejections = 3
@@ -505,7 +507,7 @@ class EpicAuthorization:
                     "continuing | current_url='{}'",
                     self.page.url,
                 )
-                extend_deadline("captcha-visible", 180)
+                extend_deadline("captcha-visible", max(180, challenge_timeout_seconds))
                 challenge_solved = False
                 try:
                     challenge_signal = await wait_for_challenge_signal(
