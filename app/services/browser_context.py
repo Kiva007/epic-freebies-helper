@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from typing import AsyncIterator
 from urllib.parse import unquote, urlsplit
 
@@ -166,11 +167,18 @@ async def open_browser_context(headless: bool | str) -> AsyncIterator[BrowserCon
     if backend in {"auto", "camoufox"}:
         try:
             from camoufox import AsyncCamoufox
+            from camoufox.addons import DefaultAddons, get_addon_path
 
             camoufox_headless = (
                 False if headless == "virtual" and os.getenv("DISPLAY") else headless
             )
-            camoufox = AsyncCamoufox(**_camoufox_launch_options(camoufox_headless, proxy))
+            options = _camoufox_launch_options(camoufox_headless, proxy)
+            # Camoufox can leave an empty extension directory after a failed download.
+            # Keep the optional ad blocker off the startup path unless it is installed.
+            if not (Path(get_addon_path(DefaultAddons.UBO.name)) / "manifest.json").is_file():
+                options["exclude_addons"] = [DefaultAddons.UBO]
+                logger.info("Optional uBlock Origin add-on unavailable; starting without it")
+            camoufox = AsyncCamoufox(**options)
             browser = await camoufox.__aenter__()
         except Exception as err:
             if backend == "camoufox" or not _is_camoufox_bootstrap_error(err):

@@ -1506,3 +1506,9 @@
 - 新阻塞证据：第 1/2/4 次登录在首块题图返回坐标后，下一块截图连续出现 `Locator.screenshot: Timeout 30000ms exceeded`（找不到 challenge-view），后续恢复又抛 `AttributeError("'NoneType' object has no attribute 'locator'")`。只能确认挑战视图不可用，尚不能确定是页面过期、导航、挑战刷新或其他生命周期原因。
 - 第 3 次登录完整返回两块坐标（19:10:10 与 19:13:18），但提交后 `Wait for captcha response timeout 30.0s`；随后再次求解及第 5 次登录均耗尽 600 秒执行预算。模型坐标返回耗时为分钟级，部分返回仅一个点，但这些现象不足以单独判定答案错误或模型不支持。
 - 改动文件：本条仅追加 `docs/maintenance-log.md`。未继续上调超时、未修改截图/提交逻辑、未再触发运行。下一步需先用本轮截图及网络/挑战生命周期证据区分视图失效与提交无响应，不能再盲目扩大预算。
+
+### 2026-11-20：修复 Camoufox 可选扩展阻塞本机启动
+
+- 现象与原因：直接运行 `run_epic.cmd` 返回 1。Camoufox 的 uBlock Origin 下载失败后留下缺少 `manifest.json` 的缓存目录，下次启动把该目录当成已安装扩展，随后校验失败。
+- 改动：`app/services/browser_context.py` 在可选扩展清单缺失时跳过加载，不修改缓存；完整扩展仍照常加载。`run_epic.cmd` 使用项目 `.venv313`、清除继承的 `PYTHONPATH`、关闭内置调度、单次执行并返回退出码，不在失败时等待按键。
+- 实机验证：直接运行 `run_epic.cmd`，确认跳过缺失的扩展、复用已有 Epic 会话，商品页识别《Mark of the Deep》已在库，程序正常退出（0）。订单历史探测返回非 JSON 的警告未阻断本次运行。未验证从零登录、新游戏结账或云端运行，未开启定时。
