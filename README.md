@@ -315,7 +315,17 @@ All week-free games are already in the library
 
 ## 本地单次调试
 
-如果你想在本地复现和 GitHub Actions 相同的入口，可以直接用仓库内置单次执行方式：
+### Windows：使用 `run_epic.cmd`
+
+1. 确认仓库根目录下的 `.venv313` 已用 Python 3.13 创建并装好项目依赖，且 Camoufox 浏览器已安装。启动脚本不会自动安装这些组件。
+2. 将 [`.env.example`](.env.example) 复制为仓库根目录的 `.env`，在本机填写 Epic 账号和所用模型服务的配置。不要提交 `.env`、浏览器会话或运行数据。
+3. 在仓库根目录运行 `.\run_epic.cmd`，或在资源管理器中双击 `run_epic.cmd`。脚本只运行一轮，可能实际领取免费游戏；运行日志见 `app/volumes/logs/runtime.log`。
+
+uBlock Origin 是可选扩展，缺失或缓存不完整时会跳过加载。脚本关闭内置调度，不会创建 Windows 计划任务，也不会启用 GitHub Actions 的每周定时。
+
+### 通用入口：使用 `uv`
+
+如果你想在本机运行和 GitHub Actions 相同的 Python 入口：
 
 1. 复制 [`.env.example`](.env.example) 为 `.env`
 2. 填好你自己的账号和模型配置

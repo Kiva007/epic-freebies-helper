@@ -275,7 +275,17 @@ If you need to open an issue, do not paste only a short log excerpt.
 
 ## Local One-Shot Debugging
 
-If you want to reproduce the same entrypoint locally, use the repository's built-in one-shot run path:
+### Windows: Run `run_epic.cmd`
+
+1. Make sure the repository root contains a `.venv313` environment created with Python 3.13, with the project dependencies installed. Install the Camoufox browser separately. The launcher does not install these components.
+2. Copy [`.env.example`](.env.example) to `.env` in the repository root and fill in your Epic account and model provider settings locally. Do not commit `.env`, browser sessions, or runtime data.
+3. Run `.\run_epic.cmd` from the repository root, or double-click `run_epic.cmd` in File Explorer. It runs once and may claim free games; see `app/volumes/logs/runtime.log` for the result.
+
+The optional uBlock Origin add-on is skipped if it is missing or its cache is incomplete. The launcher disables the built-in scheduler. It does not create a Windows scheduled task or enable the weekly GitHub Actions workflow.
+
+### General entry point: `uv`
+
+To run the same Python entry point used by GitHub Actions locally:
 
 1. Copy [`.env.example`](.env.example) to `.env`
 2. Fill in your own account and model configuration
